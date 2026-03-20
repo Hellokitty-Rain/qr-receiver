@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>QR Receiver</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Syne:wght@400;700;800&display=swap');
+
+  :root {
+    --bg: #0a0c0f;
+    --panel: #111418;
+    --border: #1e2530;
+    --accent: #00e5ff;
+    --accent2: #ff6b35;
+    --ok: #00ff88;
+    --warn: #ffcc00;
+    --err: #ff3b5c;
+    --text: #c8d8e8;
+    --dim: #4a5a6a;
+    --mono: 'Share Tech Mono', monospace;
+    --sans: 'Syne', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    overflow-x: hidden;
+  }
+
+  /* Scanline overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,229,255,0.015) 2px,
+      rgba(0,229,255,0.015) 4px
+    );
+    pointer-events: none;
+    z-index: 100;
+  }
+
+  /* Grid background */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,229,255,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,229,255,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .wrapper {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    max-width: 520px;
+    padding: 20px 16px 40px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  /* Header */
+  header {
+    text-align: center;
+    padding: 24px 0 8px;
+  }
+
+  .logo {
+    font-family: var(--sans);
+    font-size: 28px;
+    font-weight: 800;
+    letter-spacing: 0.15em;
+    color: var(--accent);
+    text-transform: uppercase;
+    text-shadow: 0 0 20px rgba(0,229,255,0.4);
+  }
+
+  .logo span { color: var(--accent2); }
+
+  .subtitle {
+    font-size: 11px;
+    letter-spacing: 0.3em;
+    color: var(--dim);
+    margin-top: 4px;
+    text-transform: uppercase;
+  }
+
+  /* Cards */
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+
+  .card-header .dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent);
+    flex-shrink: 0;
+  }
+
+  .card-body { padding: 14px; }
+
+  /* Camera view */
+  .cam-wrap {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 1;
+    background: #000;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  #video {
+    width: 100%; height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  /* Corner markers */
+  .cam-wrap::before, .cam-wrap::after,
+  .cam-inner::before, .cam-inner::after {
+    content: '';
+    position: absolute;
+    width: 24px; height: 24px;
+    border-color: var(--accent);
+    border-style: solid;
+    z-index: 10;
+  }
+  .cam-wrap::before  { top: 10px; left: 10px;  border-width: 2px 0 0 2px; }
+  .cam-wrap::after   { top: 10px; right: 10px; border-width: 2px 2px 0 0; }
+  .cam-inner::before { bottom: 10px; left: 10px;  border-width: 0 0 2px 2px; }
+  .cam-inner::after  { bottom: 10px; right: 10px; border-width: 0 2px 2px 0; }
+
+  /* Scan line animation */
+  .scan-line {
+    position: absolute;
+    left: 10px; right: 10px;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    box-shadow: 0 0 10px var(--accent);
+    animation: scan 2s linear infinite;
+    z-index: 11;
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+  .scanning .scan-line { opacity: 1; }
+  @keyframes scan {
+    0%   { top: 10px; }
+    100% { top: calc(100% - 12px); }
+  }
+
+  /* Flash on decode */
+  .flash-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(0,229,255,0.25);
+    opacity: 0;
+    pointer-events: none;
+    z-index: 12;
+    transition: opacity 0.05s;
+  }
+  .flash-overlay.flash { opacity: 1; }
+
+  /* Status bar */
+  .status-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    background: rgba(0,229,255,0.03);
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+  }
+
+  .status-indicator {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--dim);
+    flex-shrink: 0;
+    transition: background 0.2s, box-shadow 0.2s;
+  }
+  .status-indicator.active {
+    background: var(--ok);
+    box-shadow: 0 0 8px var(--ok);
+    animation: pulse 1s ease infinite;
+  }
+  .status-indicator.warn { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+  .status-indicator.err  { background: var(--err);  box-shadow: 0 0 8px var(--err);  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.4; }
+  }
+
+  #status-text { flex: 1; color: var(--text); }
+
+  /* Progress */
+  .progress-wrap {
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .progress-header {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+  }
+
+  .progress-label { color: var(--dim); }
+  .progress-count { color: var(--accent); font-weight: bold; }
+
+  .progress-track {
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .progress-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--accent), var(--ok));
+    border-radius: 3px;
+    transition: width 0.3s ease;
+    box-shadow: 0 0 10px rgba(0,229,255,0.4);
+  }
+
+  /* Frame grid */
+  .frame-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(28px, 1fr));
+    gap: 3px;
+    padding: 14px;
+    max-height: 120px;
+    overflow-y: auto;
+  }
+
+  .frame-cell {
+    aspect-ratio: 1;
+    border-radius: 3px;
+    background: var(--border);
+    transition: background 0.2s, box-shadow 0.2s;
+    position: relative;
+  }
+
+  .frame-cell.received {
+    background: var(--ok);
+    box-shadow: 0 0 6px rgba(0,255,136,0.5);
+  }
+
+  .frame-cell.received::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: var(--ok);
+    border-radius: 3px;
+    animation: cellPop 0.3s ease forwards;
+  }
+
+  @keyframes cellPop {
+    0%   { transform: scale(1.5); opacity: 0.8; }
+    100% { transform: scale(1);   opacity: 0; }
+  }
+
+  /* Log */
+  .log-area {
+    font-size: 11px;
+    line-height: 1.7;
+    color: var(--dim);
+    padding: 10px 14px;
+    max-height: 100px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  .log-area .log-ok   { color: var(--ok); }
+  .log-area .log-warn { color: var(--warn); }
+  .log-area .log-err  { color: var(--err); }
+  .log-area .log-info { color: var(--accent); }
+
+  /* Buttons */
+  .btn-row {
+    display: flex;
+    gap: 10px;
+    padding: 14px;
+    padding-top: 0;
+  }
+
+  .btn {
+    flex: 1;
+    padding: 11px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.1em;
+    cursor: pointer;
+    text-transform: uppercase;
+    transition: all 0.15s;
+  }
+
+  .btn:hover { border-color: var(--accent); color: var(--accent); background: rgba(0,229,255,0.05); }
+  .btn:active { transform: scale(0.97); }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #000;
+    border-color: var(--accent);
+    font-weight: bold;
+  }
+  .btn-primary:hover { background: #33ecff; color: #000; border-color: #33ecff; }
+
+  .btn-ok {
+    background: var(--ok);
+    color: #000;
+    border-color: var(--ok);
+    font-weight: bold;
+  }
+  .btn-ok:hover { background: #33ffaa; color: #000; }
+  .btn-ok:disabled { opacity: 0.3; cursor: not-allowed; background: var(--ok); }
+
+  .btn-danger { border-color: var(--err); color: var(--err); }
+  .btn-danger:hover { background: rgba(255,59,92,0.1); }
+
+  /* Complete overlay */
+  .complete-banner {
+    display: none;
+    background: linear-gradient(135deg, rgba(0,255,136,0.1), rgba(0,229,255,0.1));
+    border: 1px solid var(--ok);
+    border-radius: 6px;
+    padding: 20px;
+    text-align: center;
+    gap: 12px;
+    flex-direction: column;
+    align-items: center;
+  }
+  .complete-banner.show { display: flex; }
+
+  .complete-icon {
+    font-size: 40px;
+    filter: drop-shadow(0 0 12px var(--ok));
+  }
+
+  .complete-title {
+    font-family: var(--sans);
+    font-size: 20px;
+    font-weight: 800;
+    color: var(--ok);
+    letter-spacing: 0.1em;
+  }
+
+  .complete-meta {
+    font-size: 11px;
+    color: var(--dim);
+    line-height: 1.8;
+  }
+
+  canvas { display: none; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<div class="wrapper">
+  <header>
+    <div class="logo">QR <span>RX</span></div>
+    <div class="subtitle">File Transfer Receiver — v1.0</div>
+  </header>
+
+  <!-- Camera -->
+  <div class="card">
+    <div class="card-header"><span class="dot"></span>摄像头扫描</div>
+    <div class="card-body" style="padding:10px">
+      <div class="cam-wrap scanning" id="camWrap">
+        <div class="cam-inner"></div>
+        <video id="video" playsinline autoplay muted></video>
+        <div class="scan-line"></div>
+        <div class="flash-overlay" id="flashOverlay"></div>
+      </div>
+      <canvas id="canvas"></canvas>
+    </div>
+    <div class="status-bar">
+      <div class="status-indicator" id="statusDot"></div>
+      <div id="status-text">正在启动摄像头…</div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="startBtn" onclick="startCamera()">▶ 启动摄像头</button>
+      <button class="btn btn-danger" id="stopBtn" onclick="stopCamera()" disabled>■ 停止</button>
+    </div>
+  </div>
+
+  <!-- Progress -->
+  <div class="card">
+    <div class="card-header"><span class="dot"></span>接收进度</div>
+    <div class="progress-wrap">
+      <div class="progress-header">
+        <span class="progress-label">已接收帧数</span>
+        <span class="progress-count" id="progressCount">0 / —</span>
+      </div>
+      <div class="progress-track">
+        <div class="progress-fill" id="progressFill"></div>
+      </div>
+    </div>
+    <div class="frame-grid" id="frameGrid"></div>
+  </div>
+
+  <!-- Complete -->
+  <div class="complete-banner" id="completeBanner">
+    <div class="complete-icon">✦</div>
+    <div class="complete-title">传输完成</div>
+    <div class="complete-meta" id="completeMeta"></div>
+    <button class="btn btn-ok" id="downloadBtn" onclick="downloadFile()">⬇ 下载还原文件</button>
+    <button class="btn" onclick="resetAll()" style="margin-top:4px">↺ 重新接收</button>
+  </div>
+
+  <!-- Log -->
+  <div class="card">
+    <div class="card-header"><span class="dot"></span>日志</div>
+    <div class="log-area" id="logArea"></div>
+    <div class="btn-row">
+      <button class="btn" onclick="resetAll()">↺ 重置</button>
+      <button class="btn" onclick="document.getElementById('logArea').innerHTML=''">清除日志</button>
+    </div>
+  </div>
+</div>
+
+<!-- jsQR from CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsqr/1.4.0/jsQR.js"></script>
+
+<script>
+// ─── 状态 ───────────────────────────────────────────────────────────────────
+const state = {
+  total: null,
+  frames: {},       // index(1-based) → content string
+  receivedCount: 0,
+  scanning: false,
+  stream: null,
+  rafId: null,
+  lastDecoded: null,
+  lastDecodedTime: 0,
+  filename: 'output.txt',
+};
+
+// ─── DOM ────────────────────────────────────────────────────────────────────
+const video       = document.getElementById('video');
+const canvas      = document.getElementById('canvas');
+const ctx         = canvas.getContext('2d');
+const statusDot   = document.getElementById('statusDot');
+const statusText  = document.getElementById('status-text');
+const progressFill= document.getElementById('progressFill');
+const progressCount=document.getElementById('progressCount');
+const frameGrid   = document.getElementById('frameGrid');
+const logArea     = document.getElementById('logArea');
+const flashOverlay= document.getElementById('flashOverlay');
+const completeBanner=document.getElementById('completeBanner');
+const completeMeta= document.getElementById('completeMeta');
+const startBtn    = document.getElementById('startBtn');
+const stopBtn     = document.getElementById('stopBtn');
+
+// ─── 日志 ────────────────────────────────────────────────────────────────────
+function log(msg, type='') {
+  const d = new Date();
+  const ts = d.toTimeString().slice(0,8);
+  const line = document.createElement('div');
+  line.className = type ? `log-${type}` : '';
+  line.textContent = `[${ts}] ${msg}`;
+  logArea.appendChild(line);
+  logArea.scrollTop = logArea.scrollHeight;
+}
+
+// ─── 摄像头 ──────────────────────────────────────────────────────────────────
+async function startCamera() {
+  try {
+    setStatus('请求摄像头权限…', '');
+    const constraints = {
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1280 },
+        height: { ideal: 1280 }
+      }
+    };
+    state.stream = await navigator.mediaDevices.getUserMedia(constraints);
+    video.srcObject = state.stream;
+    await video.play();
+    state.scanning = true;
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+    setStatus('扫描中… 请将 GIF 对准摄像头', 'active');
+    log('摄像头已启动，开始扫描', 'info');
+    requestAnimationFrame(scanFrame);
+  } catch (err) {
+    setStatus('摄像头启动失败：' + err.message, 'err');
+    log('摄像头错误: ' + err.message, 'err');
+  }
+}
+
+function stopCamera() {
+  state.scanning = false;
+  if (state.rafId) cancelAnimationFrame(state.rafId);
+  if (state.stream) {
+    state.stream.getTracks().forEach(t => t.stop());
+    state.stream = null;
+  }
+  video.srcObject = null;
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+  setStatus('已停止', '');
+  log('扫描已停止', 'warn');
+}
+
+// ─── 核心扫描循环 ─────────────────────────────────────────────────────────────
+function scanFrame() {
+  if (!state.scanning) return;
+  state.rafId = requestAnimationFrame(scanFrame);
+
+  if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
+
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  if (!vw || !vh) return;
+
+  canvas.width  = vw;
+  canvas.height = vh;
+  ctx.drawImage(video, 0, 0, vw, vh);
+
+  const imageData = ctx.getImageData(0, 0, vw, vh);
+  const code = jsQR(imageData.data, vw, vh, {
+    inversionAttempts: 'dontInvert',
+  });
+
+  if (!code) return;
+
+  const raw = code.data;
+  const now = Date.now();
+
+  // 防重复：同一内容 1 秒内只处理一次
+  if (raw === state.lastDecoded && now - state.lastDecodedTime < 1000) return;
+  state.lastDecoded = raw;
+  state.lastDecodedTime = now;
+
+  processFrame(raw);
+}
+
+// ─── 帧处理 ──────────────────────────────────────────────────────────────────
+function processFrame(raw) {
+  // 解析 header：格式 "[N/T]\n内容"
+  const headerMatch = raw.match(/^\[(\d+)\/(\d+)\]\n/);
+  if (!headerMatch) {
+    log(`跳过：无法识别的格式 → ${raw.slice(0,30)}`, 'warn');
+    return;
+  }
+
+  const idx   = parseInt(headerMatch[1]);
+  const total = parseInt(headerMatch[2]);
+  const content = raw.slice(headerMatch[0].length);
+
+  // 初始化总帧数
+  if (state.total === null) {
+    state.total = total;
+    initFrameGrid(total);
+    log(`检测到总帧数: ${total}`, 'info');
+  }
+
+  // 已接收过
+  if (state.frames[idx] !== undefined) return;
+
+  // 存储
+  state.frames[idx] = content;
+  state.receivedCount++;
+
+  // 更新 UI
+  flash();
+  updateFrameCell(idx);
+  updateProgress();
+  setStatus(`已接收 ${state.receivedCount}/${state.total} 帧`, 'active');
+  log(`✓ 帧 ${idx}/${total}`, 'ok');
+
+  // 完成检查
+  if (state.receivedCount === state.total) {
+    onComplete();
+  }
+}
+
+// ─── 完成处理 ────────────────────────────────────────────────────────────────
+function onComplete() {
+  stopCamera();
+  setStatus('接收完成！', 'active');
+  log(`全部 ${state.total} 帧接收完毕，开始解码…`, 'info');
+
+  // 拼接 Base85 字符串
+  let b85 = '';
+  for (let i = 1; i <= state.total; i++) {
+    b85 += state.frames[i];
+  }
+
+  log(`Base85 总长度: ${b85.length} 字符`, 'info');
+
+  completeBanner.classList.add('show');
+  completeMeta.innerHTML =
+    `总帧数: <b>${state.total}</b> &nbsp;|&nbsp; ` +
+    `数据长度: <b>${b85.length}</b> 字符<br>` +
+    `点击下载按钮，浏览器将解压并保存文件`;
+
+  // 存储供下载使用
+  window._b85data = b85;
+}
+
+// ─── 下载文件 ────────────────────────────────────────────────────────────────
+async function downloadFile() {
+  const b85 = window._b85data;
+  if (!b85) return;
+
+  try {
+    log('正在 Base85 解码…', 'info');
+    const compressed = base85Decode(b85);
+    log(`解码后字节数: ${compressed.length}`, 'info');
+
+    log('正在 gzip 解压…', 'info');
+    const decompressed = await gunzip(compressed);
+    const text = new TextDecoder('utf-8').decode(decompressed);
+    log(`还原文本长度: ${text.length} 字符`, 'ok');
+
+    // 尝试推断文件名
+    const firstLine = text.slice(0, 200);
+    let filename = 'output.txt';
+    if (firstLine.includes('def ') || firstLine.includes('import ') || firstLine.includes('class ')) {
+      filename = 'output.py';
+    } else if (firstLine.includes('<!DOCTYPE') || firstLine.includes('<html')) {
+      filename = 'output.html';
+    } else if (firstLine.startsWith('{') || firstLine.startsWith('[')) {
+      filename = 'output.json';
+    }
+
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+    log(`文件已下载: ${filename}`, 'ok');
+
+  } catch (err) {
+    log('解码失败: ' + err.message, 'err');
+    setStatus('解码错误', 'err');
+  }
+}
+
+// ─── gzip 解压（浏览器原生 DecompressionStream）────────────────────────────
+async function gunzip(uint8array) {
+  const ds = new DecompressionStream('gzip');
+  const writer = ds.writable.getWriter();
+  writer.write(uint8array);
+  writer.close();
+  const reader = ds.readable.getReader();
+  const chunks = [];
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+  }
+  const total = chunks.reduce((s, c) => s + c.length, 0);
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.length; }
+  return result;
+}
+
+// ─── Base85 解码（Python ascii85 / base64.b85encode 兼容）────────────────────
+function base85Decode(str) {
+  // Python base64.b85encode 使用的字符集（RFC 1924 变体）
+  const charset = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{|}~';
+  const charMap = {};
+  for (let i = 0; i < charset.length; i++) charMap[charset[i]] = i;
+
+  // 过滤非法字符（换行等）
+  str = str.split('').filter(c => charMap[c] !== undefined).join('');
+
+  const bytes = [];
+  for (let i = 0; i < str.length; i += 5) {
+    const chunk = str.slice(i, i + 5);
+    let val = 0;
+    for (const ch of chunk) val = val * 85 + charMap[ch];
+
+    const chunkLen = chunk.length;
+    const byteCount = chunkLen === 5 ? 4 : chunkLen - 1;
+    const buf = [];
+    for (let j = 0; j < 4; j++) { buf.unshift(val & 0xff); val >>= 8; }
+    bytes.push(...buf.slice(0, byteCount));
+  }
+  return new Uint8Array(bytes);
+}
+
+// ─── UI 辅助 ─────────────────────────────────────────────────────────────────
+function setStatus(msg, type) {
+  statusText.textContent = msg;
+  statusDot.className = 'status-indicator' + (type ? ' ' + type : '');
+}
+
+function flash() {
+  flashOverlay.classList.add('flash');
+  setTimeout(() => flashOverlay.classList.remove('flash'), 80);
+}
+
+function initFrameGrid(total) {
+  frameGrid.innerHTML = '';
+  for (let i = 1; i <= total; i++) {
+    const cell = document.createElement('div');
+    cell.className = 'frame-cell';
+    cell.id = `cell-${i}`;
+    cell.title = `帧 ${i}`;
+    frameGrid.appendChild(cell);
+  }
+}
+
+function updateFrameCell(idx) {
+  const cell = document.getElementById(`cell-${idx}`);
+  if (cell) cell.classList.add('received');
+}
+
+function updateProgress() {
+  const pct = state.total ? (state.receivedCount / state.total * 100) : 0;
+  progressFill.style.width = pct + '%';
+  progressCount.textContent = `${state.receivedCount} / ${state.total || '—'}`;
+}
+
+function resetAll() {
+  stopCamera();
+  state.total = null;
+  state.frames = {};
+  state.receivedCount = 0;
+  state.lastDecoded = null;
+  state.lastDecodedTime = 0;
+  window._b85data = null;
+  frameGrid.innerHTML = '';
+  progressFill.style.width = '0%';
+  progressCount.textContent = '0 / —';
+  completeBanner.classList.remove('show');
+  setStatus('已重置，请重新启动摄像头', '');
+  log('─── 已重置 ───', 'info');
+}
+
+// ─── 初始化 ──────────────────────────────────────────────────────────────────
+log('QR Receiver 已加载，点击"启动摄像头"开始', 'info');
+setStatus('等待启动…', '');
+</script>
+</body>
+</html>
