@@ -467,6 +467,7 @@ const state = {
   decodeCount: 0,
   lastRaw: null,
   lastRawTime: 0,
+  recentRaws: new Set(),  // 多码去重
 
   // Fountain 状态
   sessionId: null,
@@ -543,32 +544,55 @@ function scanFrame() {
   ctx.drawImage(video,0,0,vw,vh);
   state.scanCount++;
 
-  let result = null;
+  const now = Date.now();
+  let hitCount = 0;
 
-  // 策略1：全图
-  result = jsQR(ctx.getImageData(0,0,vw,vh).data, vw, vh, {inversionAttempts:'dontInvert'});
+  // 收集所有识别结果，全图 + 4象限
+  const toProcess = [];
 
-  // 策略2：中心80%
-  if (!result) {
-    const cx=Math.floor(vw*0.1), cy=Math.floor(vh*0.1);
-    const cw=Math.floor(vw*0.8), ch=Math.floor(vh*0.8);
-    canvas2.width=cw; canvas2.height=ch;
-    ctx2.drawImage(canvas,cx,cy,cw,ch,0,0,cw,ch);
-    result = jsQR(ctx2.getImageData(0,0,cw,ch).data, cw, ch, {inversionAttempts:'dontInvert'});
+  // 全图扫一次（单码兼容 / 画面里只有1个码时）
+  const fullImg = ctx.getImageData(0,0,vw,vh);
+  const r0 = jsQR(fullImg.data, vw, vh, {inversionAttempts:'dontInvert'});
+  if (r0) toProcess.push(r0.data);
+
+  // 4象限分别扫（2×2网格模式，每个象限带5%重叠）
+  const pad = Math.floor(Math.min(vw, vh) * 0.06);
+  const hx = Math.floor(vw / 2);
+  const hy = Math.floor(vh / 2);
+  const quadrants = [
+    [0,       0,       hx+pad,  hy+pad ],  // 左上
+    [hx-pad,  0,       hx+pad,  hy+pad ],  // 右上
+    [0,       hy-pad,  hx+pad,  hy+pad ],  // 左下
+    [hx-pad,  hy-pad,  hx+pad,  hy+pad ],  // 右下
+  ];
+
+  for (const [sx, sy, sw, sh] of quadrants) {
+    const rx = Math.max(0, sx);
+    const ry = Math.max(0, sy);
+    const rw = Math.min(sw, vw - rx);
+    const rh = Math.min(sh, vh - ry);
+    if (rw < 80 || rh < 80) continue;
+
+    canvas2.width = rw; canvas2.height = rh;
+    ctx2.drawImage(canvas, rx, ry, rw, rh, 0, 0, rw, rh);
+    const result = jsQR(
+      ctx2.getImageData(0, 0, rw, rh).data, rw, rh,
+      {inversionAttempts:'dontInvert'}
+    );
+    if (result) toProcess.push(result.data);
+  }
+
+  // 去重后统一处理
+  for (const raw of toProcess) {
+    if (state.recentRaws.has(raw)) continue;
+    state.recentRaws.add(raw);
+    setTimeout(() => state.recentRaws.delete(raw), 800);
+    state.decodeCount++; hitCount++;
+    processFrame(raw);
   }
 
   document.getElementById('debugBar').textContent =
-    `扫描: ${state.scanCount} | 识别: ${state.decodeCount} | ${vw}x${vh}`;
-
-  if (!result) return;
-
-  const raw = result.data;
-  const now = Date.now();
-  if (raw === state.lastRaw && now - state.lastRawTime < 800) return;
-  state.lastRaw = raw; state.lastRawTime = now;
-  state.decodeCount++;
-
-  processFrame(raw);
+    `扫描: ${state.scanCount} | 识别: ${state.decodeCount} | 本帧: ${hitCount} | ${vw}x${vh}`;
 }
 
 // ─── 帧处理 ──────────────────────────────────────────────────────────────────
@@ -773,6 +797,7 @@ function updateProgress(pct) {
 function resetAll() {
   stopCamera();
   resetDecoder();
+  state.recentRaws = new Set();
   document.getElementById('completeBanner').classList.remove('show');
   window._fileData = null; window._fileName = null;
   setStatus('已重置', '');
