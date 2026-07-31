@@ -20825,9 +20825,17 @@ function scanFrame() {
 
 // ─── 帧处理 ──────────────────────────────────────────────────────────────────
 function processFrame(raw) {
-  // 调试：显示原始内容前50字符
+  // 调试：显示原始内容
   document.getElementById('debugBar').textContent =
     '收到: ' + raw.slice(0,60).replace(/\n/g,'↵');
+
+  // 非META帧记录到日志（只记前3次）
+  if (!raw.startsWith('META|')) {
+    state._nonMetaCount = (state._nonMetaCount || 0) + 1;
+    if (state._nonMetaCount <= 3) {
+      log('非META帧原始: ' + raw.slice(0, 80), 'info');
+    }
+  }
 
   // 格式1：META 帧 — "META|<sid>|<json>"
   if (raw.startsWith('META|')) {
@@ -20836,10 +20844,11 @@ function processFrame(raw) {
     const sid = parts[1];
     const json = parts.slice(2).join('|');
 
-    // 新 session
+    // 新 session 或 K 变化都重置
     if (state.sessionId && state.sessionId !== sid) {
-      log(`新会话 ${sid}，重置`, 'warn');
+      log(`新会话 ${sid}（旧: ${state.sessionId}），重置`, 'warn');
       resetDecoder();
+      state.sessionId = sid;
     }
 
     if (!state.meta) {
@@ -20891,10 +20900,13 @@ function processFrame(raw) {
 
   if (!state.decoder) {
     if (!state.meta) {
-      state.meta = { K, bs: 400, enc: K * 400, name: 'output.bin', size: 0 };
+      // 没有 META 时用数据帧里的参数临时初始化
+      const bs = 600; // 默认块大小
+      state.meta = { K, bs, enc: K * bs, name: 'output.bin', size: 0 };
       state.sessionId = sid;
-      initDecoder(state.meta);
+      log(`无META，从数据帧初始化: K=${K} bs=${bs}`, 'warn');
     }
+    initDecoder(state.meta);
   }
 
   if (!state.decoder) {
@@ -20902,10 +20914,15 @@ function processFrame(raw) {
     return;
   }
 
-  // 检查 K 是否和解码器一致
+  // K 不匹配：完全重置，以数据帧的 K 为准
   if (K !== state.decoder.K) {
-    log(`K不匹配: 帧K=${K} 解码器K=${state.decoder.K}`, 'err');
-    return;
+    log(`K不匹配: 帧K=${K} 解码器K=${state.decoder.K}，重置解码器`, 'warn');
+    const bs = state.meta ? state.meta.bs : 600;
+    state.meta = Object.assign({}, state.meta || {}, { K, bs });
+    state.decoder = new FountainDecoder(K, bs);
+    state.receivedFrames = new Set();
+    state.frameCount = 0;
+    initBlockGrid(K);
   }
 
   // 解码 payload
