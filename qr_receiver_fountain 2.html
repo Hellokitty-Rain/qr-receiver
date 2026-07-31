@@ -20767,50 +20767,60 @@ function scheduleScan() {
   state.rafId = requestAnimationFrame(() => { scanFrame(); scheduleScan(); });
 }
 
-// Worker 是否正在处理中（避免积压）
-let workerBusy = false;
-
 function scanFrame() {
   if (!state.scanning || video.readyState !== video.HAVE_ENOUGH_DATA) return;
+  if (typeof jsQR === 'undefined') {
+    document.getElementById('debugBar').textContent = 'jsQR 未就绪';
+    return;
+  }
   const vw=video.videoWidth, vh=video.videoHeight;
   if (!vw||!vh) return;
 
-  // 抓帧（很快，在主线程）
   canvas.width=vw; canvas.height=vh;
   ctx.drawImage(video,0,0,vw,vh);
   state.scanCount++;
 
-  // 更新扫描帧率
   const nowMs = Date.now();
   state.scanTimes = (state.scanTimes||[]).filter(t=>nowMs-t<1000);
   state.scanTimes.push(nowMs);
   const scanFps = state.scanTimes.length;
+
+  let hitCount = 0;
+  const toProcess = [];
+
+  // 全图
+  const full = ctx.getImageData(0,0,vw,vh);
+  const r0 = jsQR(full.data, vw, vh, {inversionAttempts:'dontInvert'});
+  if (r0) toProcess.push(r0.data);
+
+  // 4象限（带6%重叠）
+  const pad = Math.floor(Math.min(vw,vh)*0.06);
+  const hx = Math.floor(vw/2), hy = Math.floor(vh/2);
+  for (const [sx,sy,sw,sh] of [
+    [0,      0,      hx+pad, hy+pad],
+    [hx-pad, 0,      hx+pad, hy+pad],
+    [0,      hy-pad, hx+pad, hy+pad],
+    [hx-pad, hy-pad, hx+pad, hy+pad],
+  ]) {
+    const rx=Math.max(0,sx), ry=Math.max(0,sy);
+    const rw=Math.min(sw,vw-rx), rh=Math.min(sh,vh-ry);
+    if (rw<80||rh<80) continue;
+    canvas2.width=rw; canvas2.height=rh;
+    ctx2.drawImage(canvas,rx,ry,rw,rh,0,0,rw,rh);
+    const r = jsQR(ctx2.getImageData(0,0,rw,rh).data,rw,rh,{inversionAttempts:'dontInvert'});
+    if (r) toProcess.push(r.data);
+  }
+
+  for (const raw of toProcess) {
+    if (state.recentRaws.has(raw)) continue;
+    state.recentRaws.add(raw);
+    setTimeout(()=>state.recentRaws.delete(raw), 300);
+    state.decodeCount++; hitCount++;
+    processFrame(raw);
+  }
+
   document.getElementById('debugBar').textContent =
-    `扫描: ${state.scanCount} | ${scanFps} FPS | 识别: ${state.decodeCount} | ${vw}x${vh}`;
-
-  // Worker 还在处理上一帧就跳过，避免积压
-  if (workerBusy) return;
-  workerBusy = true;
-
-  const imageData = ctx.getImageData(0, 0, vw, vh);
-
-  decodeWithWorker(imageData, vw, vh, function(results, err) {
-    workerBusy = false;
-    if (err || !results.length) return;
-
-    let hitCount = 0;
-    for (const raw of results) {
-      if (state.recentRaws.has(raw)) continue;
-      state.recentRaws.add(raw);
-      setTimeout(() => state.recentRaws.delete(raw), 300);
-      state.decodeCount++; hitCount++;
-      processFrame(raw);
-    }
-    if (hitCount > 0) {
-      document.getElementById('debugBar').textContent =
-        `扫描: ${state.scanCount} | ${scanFps} FPS | 识别: ${state.decodeCount} | 本帧: ${hitCount} | ${vw}x${vh}`;
-    }
-  });
+    `扫描: ${state.scanCount} | ${scanFps} FPS | 识别: ${state.decodeCount} | 本帧: ${hitCount} | ${vw}x${vh}`;
 }
 
 // ─── 帧处理 ──────────────────────────────────────────────────────────────────
@@ -20834,13 +20844,14 @@ function processFrame(raw) {
 
     if (!state.meta) {
       try {
+        log('META raw json: ' + json.slice(0,80), 'info');
         state.meta = JSON.parse(json);
         state.sessionId = sid;
         initDecoder(state.meta);
         flash();
         log(`收到元数据: ${state.meta.name} (${fmtSize(state.meta.size)}, K=${state.meta.K})`, 'info');
       } catch(e) {
-        log('元数据解析失败: ' + e.message, 'err');
+        log('元数据解析失败: ' + e.message + ' | raw: ' + json.slice(0,60), 'err');
       }
     }
     return;
