@@ -4,7 +4,7 @@ const CACHE = 'qr-rx-v2';
 const ASSETS = [
   './',
   './qr_receiver_fountain.html',
-  'https://cdnjs.cloudflare.com/ajax/libs/jsqr/1.4.0/jsQR.min.js',
+  './zxing_reader.wasm',
   'https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Syne:wght@700;800&display=swap',
 ];
 
