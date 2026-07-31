@@ -518,7 +518,7 @@ async function startCamera() {
 
 function stopCamera() {
   state.scanning = false;
-  if (state.rafId) clearTimeout(state.rafId);
+  if (state.rafId) cancelAnimationFrame(state.rafId);
   if (state.stream) { state.stream.getTracks().forEach(t=>t.stop()); state.stream=null; }
   video.srcObject = null;
   document.getElementById('startBtn').disabled = false;
@@ -528,7 +528,7 @@ function stopCamera() {
 
 function scheduleScan() {
   if (!state.scanning) return;
-  state.rafId = setTimeout(() => { scanFrame(); scheduleScan(); }, 120); // ~8fps 扫描
+  state.rafId = requestAnimationFrame(() => { scanFrame(); scheduleScan(); });
 }
 
 function scanFrame() {
@@ -586,13 +586,19 @@ function scanFrame() {
   for (const raw of toProcess) {
     if (state.recentRaws.has(raw)) continue;
     state.recentRaws.add(raw);
-    setTimeout(() => state.recentRaws.delete(raw), 800);
+    setTimeout(() => state.recentRaws.delete(raw), 300);
     state.decodeCount++; hitCount++;
     processFrame(raw);
   }
 
+  // 计算实际扫描帧率
+  const nowMs = Date.now();
+  state.scanTimes = (state.scanTimes || []).filter(t => nowMs - t < 1000);
+  state.scanTimes.push(nowMs);
+  const scanFps = state.scanTimes.length;
+
   document.getElementById('debugBar').textContent =
-    `扫描: ${state.scanCount} | 识别: ${state.decodeCount} | 本帧: ${hitCount} | ${vw}x${vh}`;
+    `扫描: ${state.scanCount} | ${scanFps} FPS | 识别: ${state.decodeCount} | 本帧: ${hitCount} | ${vw}x${vh}`;
 }
 
 // ─── 帧处理 ──────────────────────────────────────────────────────────────────
