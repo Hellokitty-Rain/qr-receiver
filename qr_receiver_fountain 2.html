@@ -20626,6 +20626,9 @@ class FountainDecoder {
       this.decoded[remaining[0]] = frameData;
       this.decodedCount++;
       this.dirty = true;
+      if (this.decodedCount <= 3) {
+        console.log('[Fountain] decoded block', remaining[0], 'total:', this.decodedCount);
+      }
       return true;
     }
 
@@ -20949,6 +20952,11 @@ function processFrame(raw) {
 
     const isNew = state.decoder.addFrame(indices, data);
     const newSolved = state.decoder.propagate();
+
+    // 调试：前5帧打印解码结果
+    if (state.frameCount <= 5) {
+      log(`addFrame结果: isNew=${isNew} newSolved=${newSolved} decoded=${state.decoder.decodedCount}`, 'info');
+    }
 
     if (isNew || newSolved > 0) {
       flash();
