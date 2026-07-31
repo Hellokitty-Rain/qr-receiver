@@ -20739,8 +20739,8 @@ async function startCamera() {
     await video.play();
     const s = state.stream.getVideoTracks()[0].getSettings();
     log(`摄像头已启动 ${s.width}x${s.height}`, 'info');
-    // 初始化 Worker
-    if (!workerReady) { initWorker(); log('解码 Worker 已启动', 'info'); }
+    // 初始化 BarcodeDetector（优先）或 Worker
+    await initBarcodeDetector();
     state.scanning = true;
     document.getElementById('startBtn').disabled = true;
     document.getElementById('stopBtn').disabled = false;
@@ -20767,45 +20767,72 @@ function scheduleScan() {
   state.rafId = requestAnimationFrame(() => { scanFrame(); scheduleScan(); });
 }
 
+// BarcodeDetector 初始化（iOS 16+ 原生，速度最快）
+let barcodeDetector = null;
+let useBarcodeDetector = false;
+
+async function initBarcodeDetector() {
+  if ('BarcodeDetector' in window) {
+    try {
+      const supported = await BarcodeDetector.getSupportedFormats();
+      if (supported.includes('qr_code')) {
+        barcodeDetector = new BarcodeDetector({ formats: ['qr_code'] });
+        useBarcodeDetector = true;
+        log('BarcodeDetector API 已就绪（原生解码）', 'ok');
+        return;
+      }
+    } catch(e) {}
+  }
+  log('BarcodeDetector 不支持，使用 jsQR', 'warn');
+}
+
 function scanFrame() {
   if (!state.scanning || video.readyState !== video.HAVE_ENOUGH_DATA) return;
-  if (typeof jsQR === 'undefined') {
-    document.getElementById('debugBar').textContent = 'jsQR 未就绪';
-    return;
-  }
   const vw=video.videoWidth, vh=video.videoHeight;
   if (!vw||!vh) return;
 
-  canvas.width=vw; canvas.height=vh;
-  ctx.drawImage(video,0,0,vw,vh);
   state.scanCount++;
-
   const nowMs = Date.now();
   state.scanTimes = (state.scanTimes||[]).filter(t=>nowMs-t<1000);
   state.scanTimes.push(nowMs);
   const scanFps = state.scanTimes.length;
 
-  let hitCount = 0;
-  const toProcess = [];
+  document.getElementById('debugBar').textContent =
+    `扫描: ${state.scanCount} | ${scanFps} FPS | 识别: ${state.decodeCount} | ${vw}x${vh}`;
 
-  // 全图
-  const full = ctx.getImageData(0,0,vw,vh);
-  const r0 = jsQR(full.data, vw, vh, {inversionAttempts:'dontInvert'});
-  if (r0) toProcess.push(r0.data);
-
-  // 象限扫描暂时禁用（单码模式下全图已足够，节省75%处理时间）
-  // 启用4码模式时再打开
-
-  for (const raw of toProcess) {
-    if (state.recentRaws.has(raw)) continue;
+  if (useBarcodeDetector) {
+    // 原生 BarcodeDetector：直接传 video，异步，支持多码
+    barcodeDetector.detect(video).then(barcodes => {
+      let hitCount = 0;
+      for (const bc of barcodes) {
+        const raw = bc.rawValue;
+        if (state.recentRaws.has(raw)) continue;
+        state.recentRaws.add(raw);
+        setTimeout(()=>state.recentRaws.delete(raw), 300);
+        state.decodeCount++; hitCount++;
+        processFrame(raw);
+      }
+      if (hitCount > 0) {
+        document.getElementById('debugBar').textContent =
+          `扫描: ${state.scanCount} | ${scanFps} FPS | 识别: ${state.decodeCount} | 本帧: ${hitCount} | 原生`;
+      }
+    }).catch(()=>{});
+  } else {
+    // 降级：jsQR 同步解码
+    if (typeof jsQR === 'undefined') return;
+    canvas.width=vw; canvas.height=vh;
+    ctx.drawImage(video,0,0,vw,vh);
+    const r = jsQR(ctx.getImageData(0,0,vw,vh).data, vw, vh, {inversionAttempts:'dontInvert'});
+    if (!r) return;
+    const raw = r.data;
+    if (state.recentRaws.has(raw)) return;
     state.recentRaws.add(raw);
     setTimeout(()=>state.recentRaws.delete(raw), 300);
-    state.decodeCount++; hitCount++;
+    state.decodeCount++;
+    document.getElementById('debugBar').textContent =
+      `扫描: ${state.scanCount} | ${scanFps} FPS | 识别: ${state.decodeCount} | 本帧: 1 | jsQR`;
     processFrame(raw);
   }
-
-  document.getElementById('debugBar').textContent =
-    `扫描: ${state.scanCount} | ${scanFps} FPS | 识别: ${state.decodeCount} | 本帧: ${hitCount} | ${vw}x${vh}`;
 }
 
 // ─── 帧处理 ──────────────────────────────────────────────────────────────────
