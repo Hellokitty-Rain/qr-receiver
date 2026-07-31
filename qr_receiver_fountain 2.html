@@ -340,6 +340,66 @@ canvas { display:none; }
 </div>
 
 <script>
+// ─── jsQR Web Worker（内嵌）────────────────────────────────────────────────
+// Worker 代码字符串，通过 Blob URL 创建，避免跨域问题
+const WORKER_CODE = `
+self.onmessage = function(e) {
+  const { id, data, width, height } = e.data;
+  // jsQR 在 worker 里通过 importScripts 加载
+  if (!self.jsQRLoaded) {
+    try {
+      importScripts('https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js');
+      self.jsQRLoaded = true;
+    } catch(err) {
+      try {
+        importScripts('https://unpkg.com/jsqr@1.4.0/dist/jsQR.js');
+        self.jsQRLoaded = true;
+      } catch(err2) {
+        self.postMessage({ id, error: 'jsQR load failed' });
+        return;
+      }
+    }
+  }
+  const results = [];
+  // 全图
+  const r = jsQR(data, width, height, { inversionAttempts: 'dontInvert' });
+  if (r) results.push(r.data);
+  // 4象限
+  self.postMessage({ id, results });
+};
+`;
+
+let qrWorker = null;
+let workerReady = false;
+let pendingCallbacks = new Map();
+let workerMsgId = 0;
+
+function initWorker() {
+  const blob = new Blob([WORKER_CODE], { type: 'application/javascript' });
+  const url  = URL.createObjectURL(blob);
+  qrWorker   = new Worker(url);
+  qrWorker.onmessage = function(e) {
+    const { id, results, error } = e.data;
+    const cb = pendingCallbacks.get(id);
+    if (cb) { pendingCallbacks.delete(id); cb(results || [], error); }
+  };
+  workerReady = true;
+}
+
+function decodeWithWorker(imageData, width, height, callback) {
+  if (!workerReady) { callback([], 'worker not ready'); return; }
+  const id = workerMsgId++;
+  pendingCallbacks.set(id, callback);
+  // transferable 传递，零拷贝
+  const buf = imageData.data.buffer.slice(0);
+  qrWorker.postMessage(
+    { id, data: new Uint8ClampedArray(buf), width, height },
+    [buf]
+  );
+}
+</script>
+
+<script>
 (function() {
   var cdns = [
     'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js',
@@ -505,6 +565,8 @@ async function startCamera() {
     await video.play();
     const s = state.stream.getVideoTracks()[0].getSettings();
     log(`摄像头已启动 ${s.width}x${s.height}`, 'info');
+    // 初始化 Worker
+    if (!workerReady) { initWorker(); log('解码 Worker 已启动', 'info'); }
     state.scanning = true;
     document.getElementById('startBtn').disabled = true;
     document.getElementById('stopBtn').disabled = false;
@@ -531,74 +593,50 @@ function scheduleScan() {
   state.rafId = requestAnimationFrame(() => { scanFrame(); scheduleScan(); });
 }
 
+// Worker 是否正在处理中（避免积压）
+let workerBusy = false;
+
 function scanFrame() {
   if (!state.scanning || video.readyState !== video.HAVE_ENOUGH_DATA) return;
-  if (typeof jsQR === 'undefined') {
-    document.getElementById('debugBar').textContent = 'jsQR 加载中，请稍候…';
-    return;
-  }
   const vw=video.videoWidth, vh=video.videoHeight;
   if (!vw||!vh) return;
 
+  // 抓帧（很快，在主线程）
   canvas.width=vw; canvas.height=vh;
   ctx.drawImage(video,0,0,vw,vh);
   state.scanCount++;
 
-  const now = Date.now();
-  let hitCount = 0;
-
-  // 收集所有识别结果，全图 + 4象限
-  const toProcess = [];
-
-  // 全图扫一次（单码兼容 / 画面里只有1个码时）
-  const fullImg = ctx.getImageData(0,0,vw,vh);
-  const r0 = jsQR(fullImg.data, vw, vh, {inversionAttempts:'dontInvert'});
-  if (r0) toProcess.push(r0.data);
-
-  // 4象限分别扫（2×2网格模式，每个象限带5%重叠）
-  const pad = Math.floor(Math.min(vw, vh) * 0.06);
-  const hx = Math.floor(vw / 2);
-  const hy = Math.floor(vh / 2);
-  const quadrants = [
-    [0,       0,       hx+pad,  hy+pad ],  // 左上
-    [hx-pad,  0,       hx+pad,  hy+pad ],  // 右上
-    [0,       hy-pad,  hx+pad,  hy+pad ],  // 左下
-    [hx-pad,  hy-pad,  hx+pad,  hy+pad ],  // 右下
-  ];
-
-  for (const [sx, sy, sw, sh] of quadrants) {
-    const rx = Math.max(0, sx);
-    const ry = Math.max(0, sy);
-    const rw = Math.min(sw, vw - rx);
-    const rh = Math.min(sh, vh - ry);
-    if (rw < 80 || rh < 80) continue;
-
-    canvas2.width = rw; canvas2.height = rh;
-    ctx2.drawImage(canvas, rx, ry, rw, rh, 0, 0, rw, rh);
-    const result = jsQR(
-      ctx2.getImageData(0, 0, rw, rh).data, rw, rh,
-      {inversionAttempts:'dontInvert'}
-    );
-    if (result) toProcess.push(result.data);
-  }
-
-  // 去重后统一处理
-  for (const raw of toProcess) {
-    if (state.recentRaws.has(raw)) continue;
-    state.recentRaws.add(raw);
-    setTimeout(() => state.recentRaws.delete(raw), 300);
-    state.decodeCount++; hitCount++;
-    processFrame(raw);
-  }
-
-  // 计算实际扫描帧率
+  // 更新扫描帧率
   const nowMs = Date.now();
-  state.scanTimes = (state.scanTimes || []).filter(t => nowMs - t < 1000);
+  state.scanTimes = (state.scanTimes||[]).filter(t=>nowMs-t<1000);
   state.scanTimes.push(nowMs);
   const scanFps = state.scanTimes.length;
-
   document.getElementById('debugBar').textContent =
-    `扫描: ${state.scanCount} | ${scanFps} FPS | 识别: ${state.decodeCount} | 本帧: ${hitCount} | ${vw}x${vh}`;
+    `扫描: ${state.scanCount} | ${scanFps} FPS | 识别: ${state.decodeCount} | ${vw}x${vh}`;
+
+  // Worker 还在处理上一帧就跳过，避免积压
+  if (workerBusy) return;
+  workerBusy = true;
+
+  const imageData = ctx.getImageData(0, 0, vw, vh);
+
+  decodeWithWorker(imageData, vw, vh, function(results, err) {
+    workerBusy = false;
+    if (err || !results.length) return;
+
+    let hitCount = 0;
+    for (const raw of results) {
+      if (state.recentRaws.has(raw)) continue;
+      state.recentRaws.add(raw);
+      setTimeout(() => state.recentRaws.delete(raw), 300);
+      state.decodeCount++; hitCount++;
+      processFrame(raw);
+    }
+    if (hitCount > 0) {
+      document.getElementById('debugBar').textContent =
+        `扫描: ${state.scanCount} | ${scanFps} FPS | 识别: ${state.decodeCount} | 本帧: ${hitCount} | ${vw}x${vh}`;
+    }
+  });
 }
 
 // ─── 帧处理 ──────────────────────────────────────────────────────────────────
