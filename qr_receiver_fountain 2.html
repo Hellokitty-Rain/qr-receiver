@@ -20777,16 +20777,25 @@ let useBarcodeDetector = false;
 async function initBarcodeDetector() {
   if ('BarcodeDetector' in window) {
     try {
-      const supported = await BarcodeDetector.getSupportedFormats();
-      if (supported.includes('qr_code')) {
-        barcodeDetector = new BarcodeDetector({ formats: ['qr_code'] });
-        useBarcodeDetector = true;
-        log('BarcodeDetector API 已就绪（原生解码）', 'ok');
-        return;
-      }
-    } catch(e) {}
+      // 直接尝试创建，不依赖 getSupportedFormats（iOS Safari 兼容）
+      barcodeDetector = new BarcodeDetector({ formats: ['qr_code'] });
+      // 用空白 ImageBitmap 测试是否真的可用
+      const testCanvas = document.createElement('canvas');
+      testCanvas.width = 10; testCanvas.height = 10;
+      await barcodeDetector.detect(testCanvas);
+      useBarcodeDetector = true;
+      log('BarcodeDetector API 已就绪（原生解码）✓', 'ok');
+      return;
+    } catch(e) {
+      log('BarcodeDetector 创建失败: ' + e.message, 'warn');
+    }
+  } else {
+    log('BarcodeDetector API 不存在', 'warn');
   }
-  log('BarcodeDetector 不支持，使用 jsQR', 'warn');
+  // 降级：ZXing（如果可用）或 jsQR
+  if (typeof jsQR !== 'undefined') {
+    log('降级使用 jsQR', 'warn');
+  }
 }
 
 function scanFrame() {
@@ -20953,14 +20962,15 @@ function processFrame(raw) {
     const isNew = state.decoder.addFrame(indices, data);
     const newSolved = state.decoder.propagate();
 
-    // 调试：前5帧打印解码结果
-    if (state.frameCount <= 5) {
-      log(`addFrame结果: isNew=${isNew} newSolved=${newSolved} decoded=${state.decoder.decodedCount}`, 'info');
-    }
-
     if (isNew || newSolved > 0) {
       flash();
       updateBlockGrid();
+      // 每解出5块记录一次
+      if (state.decoder.decodedCount % 5 === 1) {
+        log(`已解码 ${state.decoder.decodedCount}/${state.decoder.K} 块`, 'ok');
+      }
+    } else if (state.frameCount <= 3) {
+      log(`帧${seqId} addFrame: isNew=${isNew} solved=${newSolved} total=${state.decoder.decodedCount}`, 'warn');
     }
 
     const pct = state.decoder.getProgress();
