@@ -20874,15 +20874,22 @@ function processFrame(raw) {
   const idxStr = parts[3];
   const payloadB85 = parts.slice(4).join('|');
 
-  if (isNaN(K) || isNaN(seqId)) return;
+  if (isNaN(K) || isNaN(seqId)) {
+    log('FTN帧解析失败: K=' + parts[1] + ' seqId=' + parts[2], 'err');
+    return;
+  }
 
   // 去重
   if (state.receivedFrames.has(seqId)) return;
   state.receivedFrames.add(seqId);
   state.frameCount++;
 
+  // 首次收到数据帧时打印一次调试信息
+  if (state.frameCount === 1) {
+    log(`首帧: K=${K} seqId=${seqId} indices=${idxStr.slice(0,30)} payloadLen=${payloadB85.length}`, 'info');
+  }
+
   if (!state.decoder) {
-    // 没有 meta 时临时初始化（用帧里的 K）
     if (!state.meta) {
       state.meta = { K, bs: 400, enc: K * 400, name: 'output.bin', size: 0 };
       state.sessionId = sid;
@@ -20890,10 +20897,26 @@ function processFrame(raw) {
     }
   }
 
+  if (!state.decoder) {
+    log('解码器未初始化，跳过帧 ' + seqId, 'warn');
+    return;
+  }
+
+  // 检查 K 是否和解码器一致
+  if (K !== state.decoder.K) {
+    log(`K不匹配: 帧K=${K} 解码器K=${state.decoder.K}`, 'err');
+    return;
+  }
+
   // 解码 payload
   try {
     const indices = idxStr.split(',').map(Number);
     const data = b85decode(payloadB85);
+
+    // 检查 data 长度是否和 blockSize 一致
+    if (state.frameCount <= 3) {
+      log(`帧${seqId}: indices=[${indices.slice(0,3)}...] dataLen=${data.length} bs=${state.decoder.blockSize}`, 'info');
+    }
 
     const isNew = state.decoder.addFrame(indices, data);
     const newSolved = state.decoder.propagate();
