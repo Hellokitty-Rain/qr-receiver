@@ -20733,7 +20733,7 @@ function log(msg, type='') {
 async function startCamera() {
   try {
     state.stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:1280} }
+      video: { facingMode:{ideal:'environment'}, width:{ideal:640}, height:{ideal:640} }
     });
     video.srcObject = state.stream;
     await video.play();
@@ -20793,23 +20793,8 @@ function scanFrame() {
   const r0 = jsQR(full.data, vw, vh, {inversionAttempts:'dontInvert'});
   if (r0) toProcess.push(r0.data);
 
-  // 4象限（带6%重叠）
-  const pad = Math.floor(Math.min(vw,vh)*0.06);
-  const hx = Math.floor(vw/2), hy = Math.floor(vh/2);
-  for (const [sx,sy,sw,sh] of [
-    [0,      0,      hx+pad, hy+pad],
-    [hx-pad, 0,      hx+pad, hy+pad],
-    [0,      hy-pad, hx+pad, hy+pad],
-    [hx-pad, hy-pad, hx+pad, hy+pad],
-  ]) {
-    const rx=Math.max(0,sx), ry=Math.max(0,sy);
-    const rw=Math.min(sw,vw-rx), rh=Math.min(sh,vh-ry);
-    if (rw<80||rh<80) continue;
-    canvas2.width=rw; canvas2.height=rh;
-    ctx2.drawImage(canvas,rx,ry,rw,rh,0,0,rw,rh);
-    const r = jsQR(ctx2.getImageData(0,0,rw,rh).data,rw,rh,{inversionAttempts:'dontInvert'});
-    if (r) toProcess.push(r.data);
-  }
+  // 象限扫描暂时禁用（单码模式下全图已足够，节省75%处理时间）
+  // 启用4码模式时再打开
 
   for (const raw of toProcess) {
     if (state.recentRaws.has(raw)) continue;
