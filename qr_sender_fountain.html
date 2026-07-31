@@ -1,0 +1,770 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QR TX — Fountain Transfer</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;700&display=swap');
+
+:root {
+  --bg:      #0d0f12;
+  --surface: #141720;
+  --border:  #222840;
+  --accent:  #f5a623;
+  --blue:    #4a9eff;
+  --green:   #00e676;
+  --red:     #ff4444;
+  --text:    #d0d8f0;
+  --dim:     #4a5580;
+  --mono:    'IBM Plex Mono', monospace;
+  --sans:    'IBM Plex Sans', sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 32px 16px 48px;
+}
+
+/* Grid bg */
+body::before {
+  content: '';
+  position: fixed; inset: 0;
+  background-image:
+    linear-gradient(rgba(74,158,255,0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(74,158,255,0.04) 1px, transparent 1px);
+  background-size: 32px 32px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.wrapper {
+  position: relative; z-index: 1;
+  width: 100%; max-width: 860px;
+  display: flex; flex-direction: column; gap: 20px;
+}
+
+/* Header */
+header {
+  display: flex; align-items: baseline; gap: 16px;
+  padding: 8px 0 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.logo {
+  font-family: var(--mono);
+  font-size: 22px; font-weight: 600;
+  letter-spacing: 0.12em;
+  color: var(--accent);
+}
+
+.logo-sub {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.25em;
+  color: var(--dim);
+  text-transform: uppercase;
+}
+
+/* Cards */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.card-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 10px; letter-spacing: 0.25em;
+  text-transform: uppercase; color: var(--dim);
+}
+
+.card-header .led {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+  flex-shrink: 0;
+}
+
+.card-body { padding: 16px; }
+
+/* Drop zone */
+.dropzone {
+  border: 2px dashed var(--border);
+  border-radius: 6px;
+  padding: 40px 24px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  position: relative;
+}
+.dropzone:hover, .dropzone.drag-over {
+  border-color: var(--accent);
+  background: rgba(245,166,35,0.04);
+}
+.dropzone input[type=file] {
+  position: absolute; inset: 0; opacity: 0; cursor: pointer;
+}
+.drop-icon { font-size: 36px; margin-bottom: 12px; }
+.drop-title {
+  font-family: var(--mono); font-size: 14px;
+  color: var(--text); margin-bottom: 6px;
+}
+.drop-sub { font-size: 12px; color: var(--dim); }
+
+/* File info */
+.file-info {
+  display: none;
+  align-items: center; gap: 14px;
+  padding: 12px 14px;
+  background: rgba(74,158,255,0.06);
+  border: 1px solid rgba(74,158,255,0.2);
+  border-radius: 4px;
+  margin-top: 12px;
+}
+.file-info.show { display: flex; }
+.file-icon { font-size: 24px; flex-shrink: 0; }
+.file-name { font-family: var(--mono); font-size: 13px; color: var(--blue); }
+.file-size { font-size: 11px; color: var(--dim); margin-top: 2px; }
+.file-clear {
+  margin-left: auto; background: none; border: none;
+  color: var(--dim); cursor: pointer; font-size: 18px;
+  padding: 4px 8px;
+}
+.file-clear:hover { color: var(--red); }
+
+/* Config grid */
+.config-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+}
+
+.config-item label {
+  display: block;
+  font-family: var(--mono); font-size: 10px;
+  letter-spacing: 0.2em; text-transform: uppercase;
+  color: var(--dim); margin-bottom: 6px;
+}
+
+.config-item input[type=range] {
+  width: 100%; accent-color: var(--accent);
+}
+
+.config-value {
+  font-family: var(--mono); font-size: 16px;
+  color: var(--accent); font-weight: 600;
+  margin-top: 4px;
+}
+
+.config-desc { font-size: 11px; color: var(--dim); margin-top: 2px; }
+
+/* Stats bar */
+.stats-bar {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-top: 16px;
+}
+
+.stat {
+  background: var(--surface);
+  padding: 12px;
+  text-align: center;
+}
+
+.stat-label {
+  font-family: var(--mono); font-size: 9px;
+  letter-spacing: 0.2em; text-transform: uppercase;
+  color: var(--dim); margin-bottom: 4px;
+}
+
+.stat-value {
+  font-family: var(--mono); font-size: 18px;
+  font-weight: 600; color: var(--accent);
+}
+
+.stat-unit { font-size: 10px; color: var(--dim); }
+
+/* QR display */
+.qr-area {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 16px; padding: 24px;
+}
+
+#qrCanvas {
+  border-radius: 4px;
+  image-rendering: pixelated;
+  display: none;
+}
+
+.qr-placeholder {
+  width: 320px; height: 320px;
+  border: 2px dashed var(--border);
+  border-radius: 4px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--dim); font-family: var(--mono); font-size: 12px;
+  flex-direction: column; gap: 8px;
+}
+.qr-placeholder-icon { font-size: 32px; }
+
+/* Progress ring */
+.progress-wrap {
+  display: flex; align-items: center; gap: 16px;
+}
+
+.ring-wrap { position: relative; width: 60px; height: 60px; flex-shrink: 0; }
+.ring-bg { fill: none; stroke: var(--border); stroke-width: 4; }
+.ring-fill {
+  fill: none; stroke: var(--green); stroke-width: 4;
+  stroke-linecap: round;
+  stroke-dasharray: 163; stroke-dashoffset: 163;
+  transform: rotate(-90deg); transform-origin: 50% 50%;
+  transition: stroke-dashoffset 0.3s;
+}
+.ring-text {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 11px; font-weight: 600;
+  color: var(--green);
+}
+
+.progress-info { flex: 1; }
+.progress-label {
+  font-family: var(--mono); font-size: 12px;
+  color: var(--text); margin-bottom: 4px;
+}
+.progress-sub { font-size: 11px; color: var(--dim); }
+
+/* Buttons */
+.btn-row { display: flex; gap: 10px; margin-top: 16px; }
+
+.btn {
+  flex: 1; padding: 12px;
+  border: 1px solid var(--border); border-radius: 4px;
+  background: transparent; color: var(--text);
+  font-family: var(--mono); font-size: 12px;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  cursor: pointer; transition: all 0.15s;
+}
+.btn:hover { border-color: var(--accent); color: var(--accent); background: rgba(245,166,35,0.05); }
+.btn:active { transform: scale(0.98); }
+.btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+.btn-primary {
+  background: var(--accent); color: #000;
+  border-color: var(--accent); font-weight: 600;
+}
+.btn-primary:hover { background: #f7b84a; color: #000; border-color: #f7b84a; }
+.btn-primary:disabled { background: var(--accent); color: #000; opacity: 0.3; }
+
+.btn-stop {
+  border-color: var(--red); color: var(--red);
+  display: none;
+}
+.btn-stop:hover { background: rgba(255,68,68,0.1); }
+.btn-stop.show { display: flex; align-items: center; justify-content: center; }
+
+/* Speed indicator */
+.speed-bar {
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 8px;
+}
+.speed-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--green), var(--accent));
+  border-radius: 2px;
+  transition: width 0.5s;
+  width: 0%;
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+  .config-grid { grid-template-columns: 1fr 1fr; }
+  .stats-bar { grid-template-columns: repeat(2, 1fr); }
+}
+</style>
+</head>
+<body>
+<div class="wrapper">
+
+  <header>
+    <div class="logo">QR TX</div>
+    <div class="logo-sub">Fountain Code File Transfer — Sender</div>
+  </header>
+
+  <!-- File input -->
+  <div class="card">
+    <div class="card-header"><span class="led"></span>选择文件</div>
+    <div class="card-body">
+      <div class="dropzone" id="dropzone">
+        <input type="file" id="fileInput">
+        <div class="drop-icon">📂</div>
+        <div class="drop-title">拖放文件或点击选择</div>
+        <div class="drop-sub">支持任意格式 · 建议 500 KB 以内</div>
+      </div>
+      <div class="file-info" id="fileInfo">
+        <div class="file-icon" id="fileIcon">📄</div>
+        <div>
+          <div class="file-name" id="fileName">—</div>
+          <div class="file-size" id="fileSize">—</div>
+        </div>
+        <button class="file-clear" onclick="clearFile()">✕</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Config -->
+  <div class="card">
+    <div class="card-header"><span class="led"></span>参数配置</div>
+    <div class="card-body">
+      <div class="config-grid">
+        <div class="config-item">
+          <label>播放速度</label>
+          <input type="range" id="fpsSlider" min="1" max="30" value="8" oninput="updateConfig()">
+          <div class="config-value"><span id="fpsVal">8</span> FPS</div>
+          <div class="config-desc">手机扫码建议 6-12</div>
+        </div>
+        <div class="config-item">
+          <label>每帧字节</label>
+          <input type="range" id="blockSlider" min="200" max="800" step="50" value="400" oninput="updateConfig()">
+          <div class="config-value"><span id="blockVal">400</span> B</div>
+          <div class="config-desc">越小越易扫，帧数越多</div>
+        </div>
+        <div class="config-item">
+          <label>冗余系数</label>
+          <input type="range" id="redundSlider" min="1.1" max="2.0" step="0.1" value="1.3" oninput="updateConfig()">
+          <div class="config-value"><span id="redundVal">1.3</span>×</div>
+          <div class="config-desc">越高越容忍丢帧</div>
+        </div>
+      </div>
+
+      <div class="stats-bar" id="statsBar">
+        <div class="stat">
+          <div class="stat-label">数据块数</div>
+          <div class="stat-value" id="statBlocks">—</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">理论速率</div>
+          <div class="stat-value" id="statSpeed">—</div>
+          <div class="stat-unit">KB/s</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">预计时长</div>
+          <div class="stat-value" id="statTime">—</div>
+          <div class="stat-unit">秒/轮</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">纠错能力</div>
+          <div class="stat-value" id="statRedund">—</div>
+          <div class="stat-unit">% 冗余</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- QR Display -->
+  <div class="card">
+    <div class="card-header"><span class="led"></span>QR 播放</div>
+    <div class="qr-area">
+      <div class="qr-placeholder" id="qrPlaceholder">
+        <div class="qr-placeholder-icon">◫</div>
+        <span>选择文件后开始</span>
+      </div>
+      <canvas id="qrCanvas" width="320" height="320"></canvas>
+
+      <div class="progress-wrap" id="progressWrap" style="display:none; width:100%; max-width:400px;">
+        <div class="ring-wrap">
+          <svg viewBox="0 0 60 60" width="60" height="60">
+            <circle class="ring-bg" cx="30" cy="30" r="26"/>
+            <circle class="ring-fill" id="ringFill" cx="30" cy="30" r="26"/>
+          </svg>
+          <div class="ring-text" id="ringText">0%</div>
+        </div>
+        <div class="progress-info">
+          <div class="progress-label" id="progressLabel">准备中…</div>
+          <div class="progress-sub" id="progressSub">—</div>
+          <div class="speed-bar"><div class="speed-fill" id="speedFill"></div></div>
+        </div>
+      </div>
+
+      <div class="btn-row" style="width:100%; max-width:400px;">
+        <button class="btn btn-primary" id="startBtn" onclick="startTransmit()" disabled>
+          ▶ 开始发送
+        </button>
+        <button class="btn btn-stop" id="stopBtn" onclick="stopTransmit()">
+          ■ 停止
+        </button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- qrcode.js from CDN -->
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
+<script>
+// ─── 状态 ────────────────────────────────────────────────────────────────────
+const state = {
+  file: null,
+  fileBytes: null,       // Uint8Array 原始字节
+  blocks: [],            // 数据块数组（gzip+base85后按blockSize切分）
+  K: 0,                  // 数据块总数
+  running: false,
+  timerId: null,
+  frameCount: 0,
+  startTime: 0,
+  sessionId: '',
+};
+
+// ─── 文件处理 ────────────────────────────────────────────────────────────────
+const fileInput = document.getElementById('fileInput');
+const dropzone  = document.getElementById('dropzone');
+
+fileInput.onchange = e => loadFile(e.target.files[0]);
+
+dropzone.ondragover = e => { e.preventDefault(); dropzone.classList.add('drag-over'); };
+dropzone.ondragleave = () => dropzone.classList.remove('drag-over');
+dropzone.ondrop = e => {
+  e.preventDefault();
+  dropzone.classList.remove('drag-over');
+  if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
+};
+
+async function loadFile(file) {
+  if (!file) return;
+  state.file = file;
+
+  const buf = await file.arrayBuffer();
+  const raw = new Uint8Array(buf);
+
+  // gzip 压缩
+  const cs = new CompressionStream('gzip');
+  const w = cs.writable.getWriter();
+  w.write(raw); w.close();
+  const r = cs.readable.getReader();
+  const chunks = [];
+  for (;;) { const {done, value} = await r.read(); if (done) break; chunks.push(value); }
+  const compressed = new Uint8Array(chunks.reduce((s,c)=>s+c.length,0));
+  let off = 0; for (const c of chunks) { compressed.set(c, off); off += c.length; }
+
+  // Base85 编码
+  const encoded = b85encode(compressed);
+  state.fileBytes = encoded;
+
+  // 显示文件信息
+  document.getElementById('fileInfo').classList.add('show');
+  document.getElementById('fileName').textContent = file.name;
+  document.getElementById('fileSize').textContent =
+    `原始 ${fmtSize(raw.length)} → 压缩编码后 ${fmtSize(encoded.length)} 字节`;
+  document.getElementById('fileIcon').textContent = fileIcon(file.name);
+  document.getElementById('startBtn').disabled = false;
+
+  updateConfig();
+}
+
+function clearFile() {
+  state.file = null; state.fileBytes = null;
+  document.getElementById('fileInfo').classList.remove('show');
+  document.getElementById('startBtn').disabled = true;
+  fileInput.value = '';
+  stopTransmit();
+  updateConfig();
+}
+
+// ─── 配置更新 ────────────────────────────────────────────────────────────────
+function updateConfig() {
+  const fps     = parseInt(document.getElementById('fpsSlider').value);
+  const blockSz = parseInt(document.getElementById('blockSlider').value);
+  const redund  = parseFloat(document.getElementById('redundSlider').value);
+
+  document.getElementById('fpsVal').textContent    = fps;
+  document.getElementById('blockVal').textContent  = blockSz;
+  document.getElementById('redundVal').textContent = redund.toFixed(1);
+
+  if (!state.fileBytes) {
+    ['statBlocks','statSpeed','statTime','statRedund'].forEach(id =>
+      document.getElementById(id).textContent = '—');
+    return;
+  }
+
+  const K       = Math.ceil(state.fileBytes.length / blockSz);
+  const needed  = Math.ceil(K * redund);
+  const speed   = (fps * blockSz / 1024).toFixed(1);
+  const secs    = (needed / fps).toFixed(1);
+  const redundPct = Math.round((redund - 1) * 100);
+
+  document.getElementById('statBlocks').textContent = K;
+  document.getElementById('statSpeed').textContent  = speed;
+  document.getElementById('statTime').textContent   = secs;
+  document.getElementById('statRedund').textContent = redundPct + '%';
+}
+
+// ─── Fountain Code 核心 ──────────────────────────────────────────────────────
+// Luby Transform (LT) code — robust soliton distribution
+
+function solitonDegree(K, seed) {
+  // Robust soliton distribution
+  const rng = mulberry32(seed);
+  const R = 1 / Math.sqrt(K);
+  const c = 0.03, delta = 0.5;
+  const S = c * Math.log(K / delta) * Math.sqrt(K);
+
+  // Build CDF
+  const probs = [];
+  let sum = 0;
+  for (let d = 1; d <= K; d++) {
+    let p = 1 / (d * (d - 1) || 1);
+    if (d === 1) p = 1 / K;
+    // Robust component
+    let tau = 0;
+    if (d < K / S) tau = S / (d * K);
+    else if (d === Math.floor(K / S)) tau = S * Math.log(S / delta) / K;
+    p += tau;
+    sum += p; probs.push(sum);
+  }
+  // Normalize and sample
+  const u = rng() * sum;
+  for (let d = 0; d < probs.length; d++) {
+    if (u <= probs[d]) return d + 1;
+  }
+  return K;
+}
+
+function selectBlocks(K, degree, seed) {
+  // Deterministically select `degree` block indices from seed
+  const rng = mulberry32(seed ^ 0xdeadbeef);
+  const chosen = new Set();
+  while (chosen.size < degree) {
+    chosen.add(Math.floor(rng() * K));
+  }
+  return [...chosen];
+}
+
+function encodeFountainFrame(blocks, K, seqId, blockSize) {
+  // seqId 决定这帧用哪些块 XOR
+  const degree = solitonDegree(K, seqId);
+  const indices = selectBlocks(K, Math.min(degree, K), seqId);
+
+  // XOR 选中的块
+  const data = new Uint8Array(blockSize);
+  for (const idx of indices) {
+    const block = blocks[idx];
+    for (let i = 0; i < blockSize; i++) {
+      data[i] ^= block[i] || 0;
+    }
+  }
+
+  // 构造帧数据：header + encoded payload
+  // header: "FTN|<K>|<seqId>|<indices_b85>|<filename_b85>|"
+  // payload: data 的 base85
+  const idxStr = indices.join(',');
+  const payloadB85 = b85encode(data);
+  return `FTN|${K}|${seqId}|${idxStr}|${payloadB85}`;
+}
+
+// ─── 发送控制 ────────────────────────────────────────────────────────────────
+function startTransmit() {
+  if (!state.fileBytes || state.running) return;
+
+  const blockSz = parseInt(document.getElementById('blockSlider').value);
+  const fps     = parseInt(document.getElementById('fpsSlider').value);
+
+  // 切块（最后一块补零）
+  const K = Math.ceil(state.fileBytes.length / blockSz);
+  const blocks = [];
+  for (let i = 0; i < K; i++) {
+    const block = new Uint8Array(blockSz);
+    const src = state.fileBytes.slice(i * blockSz, (i + 1) * blockSz);
+    block.set(src);
+    blocks.push(block);
+  }
+
+  // 元数据帧：文件名、原始大小、块数、块大小
+  const meta = JSON.stringify({
+    name: state.file.name,
+    size: state.file.size,
+    K: K,
+    bs: blockSz,
+    enc: state.fileBytes.length,
+  });
+
+  state.blocks    = blocks;
+  state.K         = K;
+  state.running   = true;
+  state.frameCount = 0;
+  state.startTime  = Date.now();
+  state.sessionId  = Math.random().toString(36).slice(2,8).toUpperCase();
+  state.meta       = meta;
+  state.fps        = fps;
+  state.blockSz    = blockSz;
+  state.metaSent   = false;
+
+  document.getElementById('startBtn').style.display = 'none';
+  document.getElementById('stopBtn').classList.add('show');
+  document.getElementById('qrPlaceholder').style.display = 'none';
+  document.getElementById('qrCanvas').style.display = 'block';
+  document.getElementById('progressWrap').style.display = 'flex';
+
+  scheduleFrame();
+}
+
+function stopTransmit() {
+  state.running = false;
+  if (state.timerId) clearTimeout(state.timerId);
+  document.getElementById('startBtn').style.display = '';
+  document.getElementById('stopBtn').classList.remove('show');
+  document.getElementById('qrPlaceholder').style.display = 'flex';
+  document.getElementById('qrCanvas').style.display = 'none';
+  document.getElementById('progressWrap').style.display = 'none';
+}
+
+function scheduleFrame() {
+  if (!state.running) return;
+  const delay = Math.round(1000 / state.fps);
+  state.timerId = setTimeout(() => {
+    renderFrame();
+    scheduleFrame();
+  }, delay);
+}
+
+function renderFrame() {
+  const { K, blocks, sessionId, blockSz, fps } = state;
+  let content;
+
+  // 每 5 帧发一次元数据帧，其余发数据帧
+  if (!state.metaSent || state.frameCount % 5 === 0) {
+    content = `META|${sessionId}|${state.meta}`;
+    state.metaSent = true;
+  } else {
+    const seqId = state.frameCount;
+    content = encodeFountainFrame(blocks, K, seqId, blockSz);
+    // 追加 session id
+    content = `${sessionId}|` + content;
+  }
+
+  // 渲染 QR
+  try {
+    const qr = qrcode(0, 'L');
+    qr.addData(content, 'Byte');
+    qr.make();
+
+    const canvas = document.getElementById('qrCanvas');
+    const size = Math.min(window.innerWidth - 80, 420);
+    canvas.width = size; canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    const cellSize = size / qr.getModuleCount();
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = '#000';
+    for (let r = 0; r < qr.getModuleCount(); r++) {
+      for (let c = 0; c < qr.getModuleCount(); c++) {
+        if (qr.isDark(r, c)) {
+          ctx.fillRect(c * cellSize, r * cellSize, cellSize, cellSize);
+        }
+      }
+    }
+  } catch(e) {
+    // QR 容量超限，跳过这帧
+  }
+
+  // 更新进度
+  state.frameCount++;
+  const elapsed = (Date.now() - state.startTime) / 1000;
+  const needed  = Math.ceil(K * parseFloat(document.getElementById('redundSlider').value));
+  const dataFrames = state.frameCount - Math.floor(state.frameCount / 5); // 排除 meta 帧
+  const pct = Math.min(dataFrames / needed, 1);
+
+  const ring = document.getElementById('ringFill');
+  const circumference = 163;
+  ring.style.strokeDashoffset = circumference * (1 - pct);
+  document.getElementById('ringText').textContent = Math.round(pct * 100) + '%';
+
+  document.getElementById('progressLabel').textContent =
+    `帧 ${state.frameCount} · ${elapsed.toFixed(1)}s 已播放`;
+  document.getElementById('progressSub').textContent =
+    `接收端需要约 ${needed} 帧数据 · 循环播放中`;
+
+  const speedPct = Math.min((fps * blockSz / 1024) / 150 * 100, 100);
+  document.getElementById('speedFill').style.width = speedPct + '%';
+}
+
+// ─── Base85 编码（Python b85encode 兼容）────────────────────────────────────
+const B85CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{|}~';
+
+function b85encode(bytes) {
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 4) {
+    const remaining = Math.min(4, bytes.length - i);
+    // 凑 4 字节，不足补零（高位对齐）
+    let val = 0;
+    for (let j = 0; j < remaining; j++) {
+      val = (val * 256 + bytes[i + j]) >>> 0;
+    }
+    // 补齐到 4 字节
+    val = (val * Math.pow(256, 4 - remaining)) >>> 0;
+
+    // 编码 5 个字符
+    const chars = [];
+    for (let j = 0; j < 5; j++) {
+      chars.unshift(B85CHARS[val % 85]);
+      val = Math.floor(val / 85);
+    }
+    // 只输出 remaining+1 个字符
+    out += chars.join('').slice(0, remaining + 1);
+  }
+  return out;
+}
+
+// ─── 工具函数 ────────────────────────────────────────────────────────────────
+function mulberry32(seed) {
+  return function() {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+function fmtSize(b) {
+  if (b < 1024) return b + ' B';
+  if (b < 1024*1024) return (b/1024).toFixed(1) + ' KB';
+  return (b/1024/1024).toFixed(2) + ' MB';
+}
+
+function fileIcon(name) {
+  const ext = name.split('.').pop().toLowerCase();
+  const icons = {
+    py:'🐍', js:'📜', ts:'📘', html:'🌐', css:'🎨',
+    json:'📋', csv:'📊', tsv:'📊', xlsx:'📊', xls:'📊',
+    pdf:'📕', txt:'📄', md:'📝', zip:'📦', gz:'📦',
+    jpg:'🖼', jpeg:'🖼', png:'🖼', gif:'🖼', svg:'🖼',
+    mp4:'🎬', mp3:'🎵', wav:'🎵',
+  };
+  return icons[ext] || '📄';
+}
+
+// 初始化
+updateConfig();
+</script>
+</body>
+</html>
