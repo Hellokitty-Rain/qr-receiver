@@ -10654,6 +10654,7 @@ async function startCamera() {
 
 function stopCamera() {
   state.scanning = false;
+  scanGeneration++;  // 使所有 pending rVFC/rAF 回调失效，防止 zombie 循环
   if (state.rafId) cancelAnimationFrame(state.rafId);
   if (state.stream) { state.stream.getTracks().forEach(t=>t.stop()); state.stream=null; }
   video.srcObject = null;
@@ -10662,11 +10663,28 @@ function stopCamera() {
   setStatus('已停止', '');
 }
 
+// generation counter 防止 stop/start 后 zombie 循环
+let scanGeneration = 0;
+
 function scheduleScan() {
   if (!state.scanning) return;
-  // 始终全速扫描，让解码尽快完成
-  // 发热问题由更快完成传输来解决，而不是降频
-  state.rafId = requestAnimationFrame(() => { scanFrame(); scheduleScan(); });
+  const gen = scanGeneration;
+
+  if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+    // requestVideoFrameCallback：只在真实新帧时触发，不重复处理同一帧
+    video.requestVideoFrameCallback(() => {
+      if (!state.scanning || gen !== scanGeneration) return;
+      scanFrame();
+      scheduleScan();
+    });
+  } else {
+    // 降级：rAF
+    state.rafId = requestAnimationFrame(() => {
+      if (!state.scanning || gen !== scanGeneration) return;
+      scanFrame();
+      scheduleScan();
+    });
+  }
 }
 
 // BarcodeDetector 初始化（iOS 16+ 原生，速度最快）
@@ -10743,67 +10761,33 @@ function scanFrame() {
 
 // ─── 帧处理 ──────────────────────────────────────────────────────────────────
 function processFrame(raw) {
-  // 调试：显示原始内容
-  document.getElementById('debugBar').textContent =
-    '收到: ' + raw.slice(0,60).replace(/\n/g,'↵');
+  // 新格式（自描述帧）：SID|K|BS|ENC|SEQID|IDX,...|PAYLOAD
+  // 无需单独 META 帧，每帧含所有元信息
+  const parts = raw.split('|');
+  if (parts.length < 7) return;
 
-  // 非META帧记录到日志（只记前3次）
-  if (!raw.startsWith('META|')) {
-    state._nonMetaCount = (state._nonMetaCount || 0) + 1;
-    if (state._nonMetaCount <= 3) {
-      log('非META帧原始: ' + raw.slice(0, 80), 'info');
-    }
+  const sid     = parts[0];
+  const K       = parseInt(parts[1]);
+  const bs      = parseInt(parts[2]);
+  const encLen  = parseInt(parts[3]);
+  const seqId   = parseInt(parts[4]);
+  const idxStr  = parts[5];
+  const payloadB85 = parts.slice(6).join('|');
+
+  if (isNaN(K) || isNaN(bs) || isNaN(seqId)) return;
+
+  // Session 变化：自动重置
+  if (state.sessionId && state.sessionId !== sid) {
+    log(\`新会话 \${sid}（旧: \${state.sessionId}），自动重置\`, 'warn');
+    resetDecoder();
   }
 
-  // 格式1：META 帧 — "META|<sid>|<json>"
-  if (raw.startsWith('META|')) {
-    const parts = raw.split('|');
-    if (parts.length < 3) return;
-    const sid = parts[1];
-    const json = parts.slice(2).join('|');
-
-    // 新 session 或 K 变化都重置
-    if (state.sessionId && state.sessionId !== sid) {
-      log(`新会话 ${sid}（旧: ${state.sessionId}），重置`, 'warn');
-      resetDecoder();
-      state.sessionId = sid;
-    }
-
-    if (!state.meta) {
-      try {
-        log('META raw json: ' + json.slice(0,80), 'info');
-        state.meta = JSON.parse(json);
-        state.sessionId = sid;
-        initDecoder(state.meta);
-        flash();
-        log(`收到元数据: ${state.meta.name} (${fmtSize(state.meta.size)}, K=${state.meta.K})`, 'info');
-      } catch(e) {
-        log('元数据解析失败: ' + e.message + ' | raw: ' + json.slice(0,60), 'err');
-      }
-    }
-    return;
-  }
-
-  // 格式2：数据帧 — "<sid>|FTN|<K>|<seqId>|<indices>|<payload>"
-  const pipeIdx = raw.indexOf('|');
-  if (pipeIdx < 0) return;
-  const sid = raw.slice(0, pipeIdx);
-  const rest = raw.slice(pipeIdx + 1);
-
-  if (!rest.startsWith('FTN|')) return;
-  if (state.sessionId && sid !== state.sessionId) return;
-
-  const parts = rest.split('|');
-  if (parts.length < 5) return;
-  // parts: ['FTN', K, seqId, indices, payload]
-  const K     = parseInt(parts[1]);
-  const seqId = parseInt(parts[2]);
-  const idxStr = parts[3];
-  const payloadB85 = parts.slice(4).join('|');
-
-  if (isNaN(K) || isNaN(seqId)) {
-    log('FTN帧解析失败: K=' + parts[1] + ' seqId=' + parts[2], 'err');
-    return;
+  // 首次收到或 K/BS 变化：初始化解码器
+  if (!state.decoder || state.decoder.K !== K || state.decoder.blockSize !== bs) {
+    state.sessionId = sid;
+    state.meta = { K, bs, enc: encLen, name: 'output.bin', size: 0 };
+    initDecoder(state.meta);
+    log(\`锁定会话 \${sid}: K=\${K} bs=\${bs} enc=\${encLen}\`, 'info');
   }
 
   // 去重
@@ -10811,47 +10795,19 @@ function processFrame(raw) {
   state.receivedFrames.add(seqId);
   state.frameCount++;
 
-  // 首次收到数据帧时打印一次调试信息
-  if (state.frameCount === 1) {
-    log(`首帧: K=${K} seqId=${seqId} indices=${idxStr.slice(0,30)} payloadLen=${payloadB85.length}`, 'info');
+  // 调试：前3帧
+  if (state.frameCount <= 3) {
+    log(\`帧\${seqId}: indices=[\${idxStr.slice(0,20)}] dataLen=\${Math.floor(payloadB85.length/5*4)} bs=\${bs}\`, 'info');
   }
 
-  if (!state.decoder) {
-    if (!state.meta) {
-      // 没有 META 时从 payload 长度推算实际 bs
-      // payloadB85 是 base85 编码，每5个字符对应4字节
-      const bs = Math.floor(payloadB85.length / 5) * 4;
-      state.meta = { K, bs, enc: K * bs, name: 'output.bin', size: 0 };
-      state.sessionId = sid;
-      log(`无META，从数据帧初始化: K=${K} bs=${bs} (payload=${payloadB85.length})`, 'warn');
-    }
-    initDecoder(state.meta);
-  }
+  if (!state.decoder) return;
 
-  if (!state.decoder) {
-    log('解码器未初始化，跳过帧 ' + seqId, 'warn');
-    return;
-  }
-
-  // K 不匹配：完全重置，以数据帧的 K 为准
-  if (K !== state.decoder.K) {
-    log(`K不匹配: 帧K=${K} 解码器K=${state.decoder.K}，重置解码器`, 'warn');
-    const bs = state.meta ? state.meta.bs : 600;
-    state.meta = Object.assign({}, state.meta || {}, { K, bs });
-    state.decoder = new FountainDecoder(K, bs);
-    state.receivedFrames = new Set();
-    state.frameCount = 0;
-    initBlockGrid(K);
-  }
-
-  // 解码 payload
   try {
     const indices = idxStr.split(',').map(Number);
     const data = b85decode(payloadB85);
 
-    // 检查 data 长度是否和 blockSize 一致
     if (state.frameCount <= 3) {
-      log(`帧${seqId}: indices=[${indices.slice(0,3)}...] dataLen=${data.length} bs=${state.decoder.blockSize}`, 'info');
+      log(\`帧\${seqId} addFrame: indices=\${indices.slice(0,3)} datalen=\${data.length} bs=\${state.decoder.blockSize}\`, 'info');
     }
 
     const isNew = state.decoder.addFrame(indices, data);
@@ -10861,25 +10817,20 @@ function processFrame(raw) {
       flash();
       updateBlockGrid();
       if (state.decoder.decodedCount % 10 === 1 || state.decoder.decodedCount <= 3) {
-        log(`已解码 ${state.decoder.decodedCount}/${state.decoder.K} 块`, 'ok');
+        log(\`已解码 \${state.decoder.decodedCount}/\${state.decoder.K} 块\`, 'ok');
       }
-    } else if (state.frameCount <= 5) {
-      log(`帧${seqId} addFrame: isNew=${isNew} solved=${newSolved} decoded=${state.decoder.decodedCount} bs=${state.decoder.blockSize} datalen=${data.length}`, 'warn');
     }
 
-    const pct = state.decoder.getProgress();
-    updateProgress(pct);
     const missing = K - state.decoder.decodedCount;
-    const scanFpsHint = missing <= 5 ? ' · 降频扫描中' : '';
-    setStatus(`已收 ${state.frameCount} 帧 · ${state.decoder.decodedCount}/${K} 块 · 缺 ${missing}${scanFpsHint}`, 'active');
+    setStatus(\`已收 \${state.frameCount} 帧 · \${state.decoder.decodedCount}/\${K} 块 · 缺 \${missing}\`, 'active');
+    updateProgress(state.decoder.getProgress());
 
-    if (state.decoder.isDone()) {
-      onComplete();
-    }
+    if (state.decoder.isDone()) onComplete();
   } catch(e) {
     log('帧解码错误: ' + e.message, 'err');
   }
 }
+
 
 // ─── 解码器初始化 ─────────────────────────────────────────────────────────────
 function initDecoder(meta) {
