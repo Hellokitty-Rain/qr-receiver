@@ -10639,7 +10639,12 @@ function log(msg, type='') {
 async function startCamera() {
   try {
     state.stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:1280} }
+      video: {
+        facingMode: {ideal: 'environment'},
+        width: {ideal: 1280},
+        height: {ideal: 1280},
+        frameRate: {exact: 60}
+      }
     });
     video.srcObject = state.stream;
     await video.play();
@@ -10782,15 +10787,16 @@ function scanFrame() {
 function processFrame(raw) {
   // 新格式（自描述帧）：SID|K|BS|ENC|SEQID|IDX,...|PAYLOAD
   const parts = raw.split('|');
-  if (parts.length < 7) return;
+  if (parts.length < 8) return;
 
   const sid     = parts[0];
   const K       = parseInt(parts[1]);
   const bs      = parseInt(parts[2]);
   const encLen  = parseInt(parts[3]);
   const seqId   = parseInt(parts[4]);
-  const idxStr  = parts[5];
-  const payloadB85 = parts.slice(6).join('|');
+  const fname   = parts[5];  // 文件名
+  const idxStr  = parts[6];
+  const payloadB85 = parts.slice(7).join('|');
 
   if (isNaN(K) || isNaN(bs) || isNaN(seqId)) return;
 
@@ -10803,7 +10809,7 @@ function processFrame(raw) {
   // 首次收到或 K/BS 变化：初始化解码器
   if (!state.decoder || state.decoder.K !== K || state.decoder.blockSize !== bs) {
     state.sessionId = sid;
-    state.meta = { K, bs, enc: encLen, name: 'output.bin', size: 0 };
+    state.meta = { K, bs, enc: encLen, name: fname || 'output.bin', size: 0 };
     initDecoder(state.meta);
     log('锁定会话 ' + sid + ': K=' + K + ' bs=' + bs + ' enc=' + encLen, 'info');
   }
