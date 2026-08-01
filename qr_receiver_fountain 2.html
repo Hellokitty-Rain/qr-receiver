@@ -10645,13 +10645,18 @@ async function startCamera() {
     await video.play();
     const s = state.stream.getVideoTracks()[0].getSettings();
     log(`摄像头已启动 ${s.width}x${s.height}`, 'info');
-    // 初始化解码器（ZXing 优先），失败不影响摄像头启动
-    try { await initDecoder(); } catch(e) { log('解码器初始化异常: ' + e.message, 'warn'); }
+    // 先启动摄像头，decoder 在后台初始化（不阻塞）
     state.scanning = true;
     document.getElementById('startBtn').disabled = true;
     document.getElementById('stopBtn').disabled = false;
-    setStatus('扫描中… 对准发送端屏幕', 'active');
+    setStatus('扫描中… 解码器初始化中', 'active');
     scheduleScan();
+    // 后台初始化解码器
+    initDecoder().then(() => {
+      setStatus('扫描中… 对准发送端屏幕', 'active');
+    }).catch(e => {
+      log('解码器初始化异常: ' + e.message, 'warn');
+    });
   } catch(e) {
     setStatus('摄像头失败: ' + e.message, 'err');
     log('错误: ' + e.message, 'err');
@@ -10698,7 +10703,7 @@ let barcodeDetector = null;
 let useBarcodeDetector = false;
 
 // 解码器状态：'zxing' | 'jsqr'
-let decoderType = 'zxing';
+let decoderType = 'pending';  // 初始化完成前为 pending
 
 async function initDecoder() {
   // ZXing-WASM 已内嵌在页面里（var ZXingWASM = ...）
@@ -10739,6 +10744,13 @@ function scanFrame() {
   // 抓帧到 canvas
   canvas.width=vw; canvas.height=vh;
   ctx.drawImage(video,0,0,vw,vh);
+
+  if (!decoderType || decoderType === 'pending') {
+    document.getElementById('debugBar').textContent =
+      `扫描: ${state.scanCount} | ${scanFps} FPS | 解码器初始化中…`;
+    return;
+  }
+
   const imageData = ctx.getImageData(0,0,vw,vh);
 
   if (decoderType === 'zxing') {
