@@ -287,6 +287,11 @@ canvas { display:none; }
       <div class="status-dot" id="statusDot"></div>
       <div id="statusText">点击启动摄像头</div>
     </div>
+    <div class="btn-row" style="padding-bottom:6px">
+      <button class="btn" id="res960"  onclick="setRes(960)">960</button>
+      <button class="btn" id="res1280" onclick="setRes(1280)">1280</button>
+      <button class="btn" id="res1920" onclick="setRes(1920)">1920</button>
+    </div>
     <div class="btn-row">
       <button class="btn btn-primary" id="startBtn" onclick="startCamera()">▶ 启动摄像头</button>
       <button class="btn btn-danger" id="stopBtn" onclick="stopCamera()" disabled>■ 停止</button>
@@ -10641,15 +10646,27 @@ async function startCamera() {
     state.stream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: {ideal: 'environment'},
-        width: {ideal: 1280},
-        height: {ideal: 1280},
-        frameRate: {exact: 60}
+        width:  {ideal: camRes},
+        height: {ideal: Math.round(camRes * 9 / 16)},  // 16:9 原生格式，更易拿到60fps
+        frameRate: {ideal: 60, min: 30}
       }
     });
     video.srcObject = state.stream;
     await video.play();
     const s = state.stream.getVideoTracks()[0].getSettings();
-    log(`摄像头已启动 ${s.width}x${s.height}`, 'info');
+    log('摄像头已启动 ' + s.width + 'x' + s.height + ' @ ' + (s.frameRate||'?') + 'fps', 'info');
+    // 打印摄像头支持的能力范围
+    try {
+      const track = state.stream.getVideoTracks()[0];
+      const caps = track.getCapabilities ? track.getCapabilities() : null;
+      if (caps && caps.frameRate) {
+        log('支持帧率: ' + caps.frameRate.min + '-' + caps.frameRate.max + 'fps', 'info');
+      }
+      if (caps && caps.width) {
+        log('支持分辨率: ' + caps.width.min + '-' + caps.width.max + ' x ' +
+            caps.height.min + '-' + caps.height.max, 'info');
+      }
+    } catch(e) {}
     // 先启动摄像头，decoder 在后台初始化（不阻塞）
     state.scanning = true;
     document.getElementById('startBtn').disabled = true;
@@ -10709,6 +10726,17 @@ let useBarcodeDetector = false;
 
 // 解码器状态：'zxing' | 'jsqr'
 let decoderType = 'pending';  // 初始化完成前为 pending
+let camRes = 1280;  // 摄像头分辨率
+
+function setRes(r) {
+  camRes = r;
+  ['res960','res1280','res1920'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('btn-primary', id === 'res' + r);
+  });
+  log('分辨率设为 ' + r + '，重启摄像头生效', 'info');
+  if (state.scanning) { stopCamera(); setTimeout(startCamera, 200); }
+}
 
 async function initZXing() {
   // ZXing-WASM 已内嵌在页面里（var ZXingWASM = ...）
@@ -10745,9 +10773,12 @@ function scanFrame() {
   document.getElementById('debugBar').textContent =
     `扫描: ${state.scanCount} | ${scanFps} FPS | 识别: ${state.decodeCount} | ${vw}x${vh}`;
 
-  // 抓帧到 canvas
-  canvas.width=vw; canvas.height=vh;
-  ctx.drawImage(video,0,0,vw,vh);
+  // 抓帧：16:9 画面裁中间正方形（QR码在中央）
+  const side = Math.min(vw, vh);
+  const sx = (vw - side) >> 1;
+  const sy = (vh - side) >> 1;
+  canvas.width = side; canvas.height = side;
+  ctx.drawImage(video, sx, sy, side, side, 0, 0, side, side);
 
   if (!decoderType || decoderType === 'pending') {
     document.getElementById('debugBar').textContent =
@@ -10755,30 +10786,47 @@ function scanFrame() {
     return;
   }
 
-  const imageData = ctx.getImageData(0,0,vw,vh);
+  // 背压控制：上一帧还在解码就跳过这一帧，避免 Promise 堆积
+  if (state.decodeBusy) {
+    state.droppedFrames = (state.droppedFrames || 0) + 1;
+    return;
+  }
+
+  const imageData = ctx.getImageData(0, 0, side, side);
 
   if (decoderType === 'zxing') {
-    // ZXing-WASM 异步解码（支持多码）
+    state.decodeBusy = true;
+    const t0 = performance.now();
+
     ZXingWASM.readBarcodesFromImageData(imageData, {
       formats: ['QRCode'],
-      tryHarder: true,
+      tryHarder: false,      // false 更快：正对屏幕的码不需要 harder 搜索
       tryRotate: false,
       tryInvert: false,
+      tryDownscale: false,   // 已经是原生分辨率，不需要额外缩放尝试
+      maxNumberOfSymbols: 4, // 2x2 模式最多4个码，超过就停止搜索
     }).then(results => {
+      state.decodeBusy = false;
+      const dt = performance.now() - t0;
+      state.decodeTimes = (state.decodeTimes || []).slice(-19);
+      state.decodeTimes.push(dt);
+      const avgDt = state.decodeTimes.reduce((a,b)=>a+b,0) / state.decodeTimes.length;
+
       let hitCount = 0;
       for (const r of results) {
         const raw = r.text;
         if (!raw || state.recentRaws.has(raw)) continue;
         state.recentRaws.add(raw);
-        setTimeout(()=>state.recentRaws.delete(raw), 300);
+        setTimeout(()=>state.recentRaws.delete(raw), 250);
         state.decodeCount++; hitCount++;
         processFrame(raw);
       }
       document.getElementById('debugBar').textContent =
-        `扫描: ${state.scanCount} | ${scanFps} FPS | 识别: ${state.decodeCount} | 本帧: ${hitCount} | ZXing`;
-    }).catch(()=>{});
+        `${scanFps}fps | 识别${state.decodeCount} | 本帧${hitCount} | ${avgDt.toFixed(0)}ms | 丢${state.droppedFrames||0}`;
+    }).catch(() => {
+      state.decodeBusy = false;
+    });
   } else {
-    // jsQR 已移除，仅用 ZXing
     log('ZXing 未就绪', 'err');
   }
 }
@@ -11036,6 +11084,7 @@ if ('serviceWorker' in navigator) {
 
 // 初始化
 log('QR RX v2.0 (Fountain) 已加载', 'info');
+setRes(1280);  // 默认分辨率并高亮按钮
 setStatus('点击启动摄像头', '');
 </script>
 </body>
