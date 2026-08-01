@@ -10782,7 +10782,6 @@ function scanFrame() {
 // ─── 帧处理 ──────────────────────────────────────────────────────────────────
 function processFrame(raw) {
   // 新格式（自描述帧）：SID|K|BS|ENC|SEQID|IDX,...|PAYLOAD
-  // 无需单独 META 帧，每帧含所有元信息
   const parts = raw.split('|');
   if (parts.length < 7) return;
 
@@ -10798,7 +10797,7 @@ function processFrame(raw) {
 
   // Session 变化：自动重置
   if (state.sessionId && state.sessionId !== sid) {
-    log(\`新会话 \${sid}（旧: \${state.sessionId}），自动重置\`, 'warn');
+    log('新会话 ' + sid + '（旧: ' + state.sessionId + '），自动重置', 'warn');
     resetDecoder();
   }
 
@@ -10807,7 +10806,7 @@ function processFrame(raw) {
     state.sessionId = sid;
     state.meta = { K, bs, enc: encLen, name: 'output.bin', size: 0 };
     initDecoder(state.meta);
-    log(\`锁定会话 \${sid}: K=\${K} bs=\${bs} enc=\${encLen}\`, 'info');
+    log('锁定会话 ' + sid + ': K=' + K + ' bs=' + bs + ' enc=' + encLen, 'info');
   }
 
   // 去重
@@ -10817,7 +10816,7 @@ function processFrame(raw) {
 
   // 调试：前3帧
   if (state.frameCount <= 3) {
-    log(\`帧\${seqId}: indices=[\${idxStr.slice(0,20)}] dataLen=\${Math.floor(payloadB85.length/5*4)} bs=\${bs}\`, 'info');
+    log('帧' + seqId + ': indices=[' + idxStr.slice(0,20) + '] bs=' + bs, 'info');
   }
 
   if (!state.decoder) return;
@@ -10826,10 +10825,6 @@ function processFrame(raw) {
     const indices = idxStr.split(',').map(Number);
     const data = b85decode(payloadB85);
 
-    if (state.frameCount <= 3) {
-      log(\`帧\${seqId} addFrame: indices=\${indices.slice(0,3)} datalen=\${data.length} bs=\${state.decoder.blockSize}\`, 'info');
-    }
-
     const isNew = state.decoder.addFrame(indices, data);
     const newSolved = state.decoder.propagate();
 
@@ -10837,12 +10832,12 @@ function processFrame(raw) {
       flash();
       updateBlockGrid();
       if (state.decoder.decodedCount % 10 === 1 || state.decoder.decodedCount <= 3) {
-        log(\`已解码 \${state.decoder.decodedCount}/\${state.decoder.K} 块\`, 'ok');
+        log('已解码 ' + state.decoder.decodedCount + '/' + state.decoder.K + ' 块', 'ok');
       }
     }
 
     const missing = K - state.decoder.decodedCount;
-    setStatus(\`已收 \${state.frameCount} 帧 · \${state.decoder.decodedCount}/\${K} 块 · 缺 \${missing}\`, 'active');
+    setStatus('已收 ' + state.frameCount + ' 帧 · ' + state.decoder.decodedCount + '/' + K + ' 块 · 缺 ' + missing, 'active');
     updateProgress(state.decoder.getProgress());
 
     if (state.decoder.isDone()) onComplete();
