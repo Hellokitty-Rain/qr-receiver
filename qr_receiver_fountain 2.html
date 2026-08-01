@@ -10652,10 +10652,10 @@ async function startCamera() {
     setStatus('扫描中… 解码器初始化中', 'active');
     scheduleScan();
     // 后台初始化解码器
-    initDecoder().then(() => {
+    initZXing().then(() => {
       setStatus('扫描中… 对准发送端屏幕', 'active');
     }).catch(e => {
-      log('解码器初始化异常: ' + e.message, 'warn');
+      log('ZXing 初始化异常: ' + e.message, 'warn');
     });
   } catch(e) {
     setStatus('摄像头失败: ' + e.message, 'err');
@@ -10705,11 +10705,10 @@ let useBarcodeDetector = false;
 // 解码器状态：'zxing' | 'jsqr'
 let decoderType = 'pending';  // 初始化完成前为 pending
 
-async function initDecoder() {
+async function initZXing() {
   // ZXing-WASM 已内嵌在页面里（var ZXingWASM = ...）
   if (typeof ZXingWASM !== 'undefined' && ZXingWASM.readBarcodesFromImageData) {
     try {
-      // 预热 WASM 模块
       await ZXingWASM.getZXingModule();
       decoderType = 'zxing';
       log('ZXing-WASM 解码器已就绪 ✓', 'ok');
@@ -10718,14 +10717,14 @@ async function initDecoder() {
       log('ZXing 初始化失败: ' + e.message, 'warn');
     }
   } else {
-    log('ZXingWASM 未定义，检查 script 是否加载', 'err');
+    log('ZXingWASM 未定义', 'err');
   }
   decoderType = 'jsqr';
-  log('降级：无可用解码器（jsQR 已移除）', 'err');
+  log('无可用解码器', 'err');
 }
 
-// 保留旧名兼容
-async function initBarcodeDetector() { await initDecoder(); }
+// 兼容旧名
+async function initBarcodeDetector() { await initZXing(); }
 
 function scanFrame() {
   if (!state.scanning || video.readyState !== video.HAVE_ENOUGH_DATA) return;
